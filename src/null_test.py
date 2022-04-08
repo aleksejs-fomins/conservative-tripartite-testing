@@ -151,7 +151,8 @@ def _stratify_range(x, eta=1):
 
 def run_plot_param_effect(datagen_func, decomp_func, decompLabels,
                           nStep=100, nSkipTest=10, nTest=10000, pVal=0.01, alphaRange=(0, 1), valThr=1.0E-7,
-                          thrMetricDict=None, plotAlphaSq=False, fontsize=20):
+                          avgRand=False, thrMetricDict=None, plotAlphaSq=False, fontsize=20):
+
     alphaLst = np.linspace(*alphaRange, nStep)
     # alphaLst = _stratify_range(alphaLst, eta=2)
     # alphaLst = alphaRange[0] + (alphaRange[1] - alphaRange[0]) * alphaLst
@@ -209,9 +210,12 @@ def run_plot_param_effect(datagen_func, decomp_func, decompLabels,
         # Metric Values
         ax[0, iKind].set_title(kindLabel)
         ax[0, iKind].semilogy(alphaLstPlot, rezTrueLst[:, iKind], '.', label='Data', color='black')
-        ax[0, iKind].semilogy(alphaTestLstPlot, rezRandLst[:, iKind], label='thrShuffle', color='red')
+        if avgRand:
+            ax[0, iKind].axhline(y=np.mean(rezRandLst[:, iKind]), label='thrShuffle', color='red')
+        else:
+            ax[0, iKind].semilogy(alphaTestLstPlot, rezRandLst[:, iKind], label='thrShuffle', color='red')
         if (thrMetricDict is not None) and (thrMetricDict[kindLabel] is not None):
-            ax[0, iKind].axhline(thrMetricDict[kindLabel], label='thrAdjusted', color='purple')
+            ax[0, iKind].axhline(y=thrMetricDict[kindLabel], label='thrAdjusted', color='purple')
         ax[0, iKind].set_ylim([valThr / 2, 10])
         ax[0, iKind].legend()
 
