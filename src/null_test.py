@@ -477,140 +477,201 @@ def _in_limits(x, varLim):
     return np.all(x >= varLim[0]) and np.all(x <= varLim[1]) and (x[1] <= x[0])
 
 
-def run_sgd_3D(datagen_func, decomp_func, labelTrg, varLimits=(0, 1), nData=1000, maxStep=100, sgdSig=0.2):
-    def _est(p):
-        x, y, z = datagen_func(nData, *p)
-        rez = decomp_func(x, y, z)
-        return rez[labelTrg]
-
-    p = np.random.uniform(varLimits[0], varLimits[1], 3)
-    while not _in_limits(p, varLimits):
-        p = np.random.uniform(varLimits[0], varLimits[1], 3)
-
-    v = _est(p)
-
-    print('+', p, ':', v)
-    for i in range(maxStep):
-        pNew = p + np.random.normal(0, sgdSig, 3)
-        while not _in_limits(pNew, varLimits):
-            pNew = p + np.random.normal(0, sgdSig, 3)
-
-        vNew = _est(pNew)
-        if vNew > v:
-            print('+', pNew, ':', vNew)
-            p=pNew
-            v=vNew
-        else:
-            pass
-            # if np.random.uniform(0,1) < 0.1:
-            #     # print('-', pNew, ':', vNew)
-            #     p = pNew
-            #     # v = vNew
-
-
-def run_gridsearch_3D(datagen_func, decomp_func, labelTrg, varLimits=(0, 1), nData=1000, nStep=10):
-    rngLst = np.linspace(*varLimits, nStep)
-
+# Resampling procedure working on a grid of arbitrary dimension
+# Discretizes each dimension into nStep steps, samples nTest samples over outer product
+# Returns sampled coordinates and all results requested in the atomNames, shape (nGridPoint, nTest, nAtom)
+# Use cases:
+#   * natural 1D, 2D, 3D over noise parameters
+#   * Transformed 2D (e.g. noiseS1 = noiseS2, but noiseTrg separately)
+def run_scan_bare(datagen_func, decomp_func, nVars, atomNames, varLimits=(0, 1),
+                  nData=1000, nStep=100, nTest=20):
     rezLst = []
-    for p1 in rngLst:
-        for p2 in rngLst:
-            if p2 <= p1:
-                for p3 in rngLst:
-                    x, y, z = datagen_func(nData, p1, p2, p3)
-                    rez = decomp_func(x, y, z)[labelTrg]
-                    rezLst += [[p1, p2, p3, rez]]
 
-    rezLst = np.array(rezLst)
-    rezLst = rezLst[np.argsort(rezLst[:, -1])]  # Sort by result
-    print(rezLst[-10:])
+    x1 = np.linspace(*varLimits, nStep)
+    paramProdLst = list(itertools.product(*[x1] * nVars))
 
-
-def run_plot_1D_scan(datagen_func_1D, decomp_func, labelA, labelB, varLimits=(0, 1),
-                     nData=1000, nStep=100, nTest=20, nTestResample=1000,
-                     havePlot=True, colorA=None, colorB=None):
-    rezAMuLst = []
-    rezBMuLst = []
-    rezAStdLst = []
-    rezBStdLst = []
-
-    alphaLst = np.linspace(*varLimits, nStep)
-    for alpha in alphaLst:
-        aTmp = []
-        bTmp = []
+    for vars in paramProdLst:
+        rezLstTmp = []
         for iTest in range(nTest):
-            x, y, z = datagen_func_1D(nData, alpha)
+            x, y, z = datagen_func(nData, *vars)
             rez = decomp_func(x, y, z)
+            rezLstTmp += [[rez[k] for k in atomNames]]
 
-            aTmp += [rez[labelA]]
-            bTmp += [rez[labelB]]
+        rezLst += [rezLstTmp]
+    return np.array(paramProdLst), np.array(rezLst)
 
-        rezAMuLst += [np.mean(aTmp)]
-        rezBMuLst += [np.mean(bTmp)]
-        rezAStdLst += [np.std(aTmp)]
-        rezBStdLst += [np.std(bTmp)]
 
-    # Find and report maximal synergy point
-    iAlphaMax = np.argmax(rezBMuLst)
-    alphaMax = alphaLst[iAlphaMax]
+# Sample nTestResample from a model given noise parameter values `param`
+def resample_model(datagen_func, decomp_func, atomLabel, param, nData=1000, nTestResample=1000, haveShuffle=False):
+    datagen_func_noparam = lambda nData: datagen_func(nData, *param)
+    return sample_decomp(datagen_func_noparam, decomp_func, atomLabel,
+                         nData=nData, nSample=nTestResample, haveShuffle=haveShuffle)
 
-    # Find distribution at maximal synergy point
-    atomDistr = []
-    for iTest in range(nTestResample):
-        x, y, z = datagen_func_1D(nData, alphaMax)
-        rez = decomp_func(x, y, z)
-        atomDistr += [rez[labelB]]
 
-    atomThrMax = np.quantile(atomDistr, 0.99)
-    print('alpha', alphaMax, 'thr', atomThrMax)
+def resample_get_thr(datagen_func, decomp_func, atomLabel, atomLabels, paramArr, dataArr,
+                     nData=1000, nTestResample=1000, pVal=0.01, haveShuffle=False):
+    atomIdx = atomLabels.index(atomLabel)
+    rezMu = np.mean(dataArr[:, :, atomIdx], axis=1)
+    param = paramArr[np.argmax(rezMu)]
 
-    if havePlot:
-        plt.figure()
-        plt.errorbar(alphaLst, rezAMuLst, rezAStdLst, label=labelA, color=colorA)
-        plt.errorbar(alphaLst, rezBMuLst, rezBStdLst, label=labelB, color=colorB)
-        plt.axhline(atomThrMax, color='red', alpha=0.3, linestyle='--')
-        plt.axvline(alphaMax, color='red', alpha=0.3, linestyle='--')
+    atomDistr = resample_model(datagen_func, decomp_func, atomLabels[atomIdx], param,
+                               nData=nData, nTestResample=nTestResample, haveShuffle=haveShuffle)
+    return np.quantile(atomDistr, 1-pVal)
 
-        plt.yscale('log')
-        plt.xlabel('Parameter values')
-        plt.ylabel('Function values')
-        # plt.title('Synergy-Redundancy relationship for noisy redundant model')
+
+# Print top 10 maximal points
+def print_scan_max(paramArr, dataArr, atomLabel, atomLabels, nMax=10):
+    atomIdx = atomLabels.index(atomLabel)
+    dataAtom1D = np.mean(dataArr[:,:,atomIdx], axis=1)
+    idxsMax = np.argsort(dataAtom1D)[-nMax:][::-1]
+
+    rezArr = np.append(paramArr[idxsMax], dataAtom1D[idxsMax, None], axis=1)
+    print(rezArr)
+
+
+def plot_scan_1D(paramArr, dataArr, atomLabelsPlot, trgAtomLabel, atomLabels, savename=None, maxThr=None,
+                 colorDict=None, fontsize=16, xlabel='Parameter values', ylabel='Function values'):
+    plt.rcParams.update({'font.size': fontsize})
+    plt.figure()
+    for atomLabel in atomLabelsPlot:
+        atomIdx = atomLabels.index(atomLabel)
+
+        rezMu = np.mean(dataArr[:,:,atomIdx], axis=1)
+        rezStd = np.std(dataArr[:,:,atomIdx], axis=1)
+
+        color = None if colorDict is None else colorDict[atomLabel]
+
+        if atomLabel == trgAtomLabel:
+            plt.errorbar(paramArr, rezMu, rezStd, label=atomLabel, color=color)
+
+            paramMax = paramArr[np.argmax(rezMu)]
+            plt.axvline(paramMax, color='red', alpha=0.3, linestyle='--')
+            if maxThr is not None:
+                plt.axhline(maxThr, color='red', alpha=0.3, linestyle='--')
+        else:
+            plt.errorbar(paramArr, rezMu, rezStd, label=atomLabel, color=color, linestyle='--')
+
+    plt.yscale('log')
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    if atomLabels is not None:
         plt.legend()
+    if savename is not None:
+        plt.savefig(savename)
 
-    return alphaMax, atomThrMax
+
+def plot_scan_2D(dataArr, atomLabel, atomLabels, nStep, varLimits, fontsize=16, haveColorbar=False):
+    plt.rcParams.update({'font.size': fontsize})
+
+    atomIdx = atomLabels.index(atomLabel)
+    dataAtom1D = np.mean(dataArr[:, :, atomIdx], axis=1)
+
+    dataAtom2D = dataAtom1D.reshape((nStep, nStep))
+    plt.figure()
+    plt.imshow(dataAtom2D)
+    if haveColorbar:
+        plt.colorbar()
 
 
-def run_1D_scan_bare(datagen_func_1D, decomp_func, atomLabel, varLimits=(0, 1),
-                     nData=1000, nStep=100, nTest=20, nTestResample=1000):
-    rezMuLst = []
+def plot_scan_3D_2D_bytrg(paramArr, dataArr, atomLabel, atomLabels, zIdx, nStep, varLimits, fontsize=16, haveColorbar=False):
+    atomIdx = atomLabels.index(atomLabel)
+    valZ = np.linspace(*varLimits, nStep)[zIdx]
+    mask = paramArr[:, 2] == valZ
+    # paramArr2D = paramArr[mask, :2]
+    dataArr2D = dataArr[mask]
+    plot_scan_2D(dataArr2D, atomLabel, atomLabels, nStep, varLimits, fontsize=fontsize, haveColorbar=haveColorbar)
 
-    alphaLst = np.linspace(*varLimits, nStep)
-    for alpha in alphaLst:
-        rezTmpLst = []
-        for iTest in range(nTest):
-            x, y, z = datagen_func_1D(nData, alpha)
-            rez = decomp_func(x, y, z)
 
-            rezTmpLst += [rez[atomLabel]]
+# def run_1D_scan_bare(datagen_func_1D, decomp_func, atomLabel, varLimits=(0, 1),
+#                      nData=1000, nStep=100, nTest=20, nTestResample=1000):
+#     rezMuLst = []
+#
+#     alphaLst = np.linspace(*varLimits, nStep)
+#     for alpha in alphaLst:
+#         rezTmpLst = []
+#         for iTest in range(nTest):
+#             x, y, z = datagen_func_1D(nData, alpha)
+#             rez = decomp_func(x, y, z)
+#
+#             rezTmpLst += [rez[atomLabel]]
+#
+#         rezMuLst += [np.mean(rezTmpLst)]
+#
+#     # Find and report maximal synergy point
+#     iAlphaMax = np.argmax(rezMuLst)
+#     alphaMax = alphaLst[iAlphaMax]
+#
+#     # Find distribution at maximal synergy point
+#     atomDistr = []
+#     for iTest in range(nTestResample):
+#         x, y, z = datagen_func_1D(nData, alphaMax)
+#         rez = decomp_func(x, y, z)
+#         atomDistr += [rez[atomLabel]]
+#
+#     return alphaMax, atomDistr
 
-        rezMuLst += [np.mean(rezTmpLst)]
 
-    # Find and report maximal synergy point
-    iAlphaMax = np.argmax(rezMuLst)
-    alphaMax = alphaLst[iAlphaMax]
+# def run_plot_1D_scan(datagen_func_1D, decomp_func, labelA, labelB, varLimits=(0, 1),
+#                      nData=1000, nStep=100, nTest=20, nTestResample=1000,
+#                      havePlot=True, colorA=None, colorB=None):
+#     rezAMuLst = []
+#     rezBMuLst = []
+#     rezAStdLst = []
+#     rezBStdLst = []
+#
+#     alphaLst = np.linspace(*varLimits, nStep)
+#     for alpha in alphaLst:
+#         aTmp = []
+#         bTmp = []
+#         for iTest in range(nTest):
+#             x, y, z = datagen_func_1D(nData, alpha)
+#             rez = decomp_func(x, y, z)
+#
+#             aTmp += [rez[labelA]]
+#             bTmp += [rez[labelB]]
+#
+#         rezAMuLst += [np.mean(aTmp)]
+#         rezBMuLst += [np.mean(bTmp)]
+#         rezAStdLst += [np.std(aTmp)]
+#         rezBStdLst += [np.std(bTmp)]
+#
+#     # Find and report maximal synergy point
+#     iAlphaMax = np.argmax(rezBMuLst)
+#     alphaMax = alphaLst[iAlphaMax]
+#
+#     # Find distribution at maximal synergy point
+#     atomDistr = []
+#     for iTest in range(nTestResample):
+#         x, y, z = datagen_func_1D(nData, alphaMax)
+#         rez = decomp_func(x, y, z)
+#         atomDistr += [rez[labelB]]
+#
+#     atomThrMax = np.quantile(atomDistr, 0.99)
+#     print('alpha', alphaMax, 'thr', atomThrMax)
+#
+#     if havePlot:
+#         plt.figure()
+#         plt.errorbar(alphaLst, rezAMuLst, rezAStdLst, label=labelA, color=colorA)
+#         plt.errorbar(alphaLst, rezBMuLst, rezBStdLst, label=labelB, color=colorB)
+#         plt.axhline(atomThrMax, color='red', alpha=0.3, linestyle='--')
+#         plt.axvline(alphaMax, color='red', alpha=0.3, linestyle='--')
+#
+#         plt.yscale('log')
+#         plt.xlabel('Parameter values')
+#         plt.ylabel('Function values')
+#         # plt.title('Synergy-Redundancy relationship for noisy redundant model')
+#         plt.legend()
+#
+#     return alphaMax, atomThrMax
 
-    # Find distribution at maximal synergy point
-    atomDistr = []
-    for iTest in range(nTestResample):
-        x, y, z = datagen_func_1D(nData, alphaMax)
-        rez = decomp_func(x, y, z)
-        atomDistr += [rez[atomLabel]]
 
-    return alphaMax, atomDistr
+
 
 
 ##############################
-# Synergy-Redundancy Relation
+# Relation between two parameters
 ##############################
+
 
 def run_plot_scatter_explore(datagen_func, decomp_func, labelA, labelB, nVars, varLimits=(0, 1), nData=1000, nTestDim=10):
     rezALst = []

@@ -37,12 +37,23 @@ def discr_syn_noisy(nSample, pX=0.5, pY=0.5, pZ=0.5):
     return _add_discr_noise(nSample, x, y, z, pX=pX, pY=pY, pZ=pZ)
 
 
-def discr_method_dict():
-    return {
+def discr_sum_noisy(nSample, pX=0.5, pY=0.5, pZ=0.5):
+    x = bernoulli(nSample, 0.5)
+    y = bernoulli(nSample, 0.5)
+    z = x + y
+    return _add_discr_noise(nSample, x, y, z, pX=pX, pY=pY, pZ=pZ)
+
+
+def discr_method_dict(haveSum=False):
+    rez = {
         'discr_red': discr_red_noisy,
         'discr_unq': discr_unq_noisy,
         'discr_syn': discr_syn_noisy,
     }
+    if haveSum:
+        rez['discr_sum'] = discr_sum_noisy
+
+    return rez
 
 
 #########################################
